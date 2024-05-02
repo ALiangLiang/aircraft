@@ -1,18 +1,15 @@
-// Copyright (c) 2021-2023 FlyByWire Simulations
-//
-// SPDX-License-Identifier: GPL-3.0
-
+import { AircraftConfig } from '@fmgc/flightplanning/new/AircraftConfigInterface';
 import { AtmosphericConditions } from '@fmgc/guidance/vnav/AtmosphericConditions';
 import { FlightPathAngleStrategy, VerticalSpeedStrategy } from '@fmgc/guidance/vnav/climb/ClimbStrategy';
 import { FlapConf } from '@fmgc/guidance/vnav/common';
-import { AircraftConfiguration } from '@fmgc/guidance/vnav/descent/ApproachPathBuilder';
+import { AircraftConfiguration as AircraftCtlSurfcConfiguration } from '@fmgc/guidance/vnav/descent/ApproachPathBuilder';
 import { EngineModel } from '@fmgc/guidance/vnav/EngineModel';
 import { Predictions, StepResults } from '@fmgc/guidance/vnav/Predictions';
 import { VerticalProfileComputationParametersObserver } from '@fmgc/guidance/vnav/VerticalProfileComputationParameters';
 import { VnavConfig } from '@fmgc/guidance/vnav/VnavConfig';
 import { WindComponent } from '@fmgc/guidance/vnav/wind';
 
-export const DEFAULT_AIRCRAFT_CONFIG: AircraftConfiguration = {
+export const DEFAULT_AIRCRAFT_CTL_SURFC_CONFIG: AircraftCtlSurfcConfiguration = {
   flapConfig: FlapConf.CLEAN,
   speedbrakesExtended: false,
   gearExtended: false,
@@ -35,7 +32,7 @@ export interface DescentStrategy {
     mach: Mach,
     fuelOnBoard: number,
     headwindComponent: WindComponent,
-    config?: AircraftConfiguration,
+    config?: AircraftCtlSurfcConfiguration,
   ): StepResults;
 
   /**
@@ -53,7 +50,7 @@ export interface DescentStrategy {
     mach: Mach,
     fuelOnBoard: number,
     headwindComponent: WindComponent,
-    config?: AircraftConfiguration,
+    config?: AircraftCtlSurfcConfiguration,
   ): StepResults;
 
   /**
@@ -71,7 +68,7 @@ export interface DescentStrategy {
     mach: Mach,
     fuelOnBoard: number,
     headwindComponent: WindComponent,
-    config?: AircraftConfiguration,
+    config?: AircraftCtlSurfcConfiguration,
   ): StepResults;
 }
 
@@ -82,22 +79,25 @@ export class DesModeStrategy implements DescentStrategy {
     observer: VerticalProfileComputationParametersObserver,
     atmosphericConditions: AtmosphericConditions,
     private readonly descentStrategy: DescentStrategy,
+    private readonly acConfig: AircraftConfig,
   ) {
-    this.decelerationStrategy = new IdleDescentStrategy(observer, atmosphericConditions);
+    this.decelerationStrategy = new IdleDescentStrategy(observer, atmosphericConditions, this.acConfig);
   }
 
   static aboveProfile(
     observer: VerticalProfileComputationParametersObserver,
     atmosphericConditions: AtmosphericConditions,
+    acConfig: AircraftConfig,
   ): DesModeStrategy {
     return new DesModeStrategy(
       observer,
       atmosphericConditions,
-      new IdleDescentStrategy(observer, atmosphericConditions, {
+      new IdleDescentStrategy(observer, atmosphericConditions, acConfig, {
         flapConfig: FlapConf.CLEAN,
         gearExtended: false,
         speedbrakesExtended: true,
       }),
+      acConfig,
     );
   }
 
@@ -105,11 +105,13 @@ export class DesModeStrategy implements DescentStrategy {
     observer: VerticalProfileComputationParametersObserver,
     atmosphericConditions: AtmosphericConditions,
     verticalSpeed: FeetPerMinute,
+    acConfig: AircraftConfig,
   ): DescentStrategy {
     return new DesModeStrategy(
       observer,
       atmosphericConditions,
-      new VerticalSpeedStrategy(observer, atmosphericConditions, verticalSpeed),
+      new VerticalSpeedStrategy(observer, atmosphericConditions, verticalSpeed, acConfig),
+      acConfig,
     );
   }
 
@@ -117,11 +119,13 @@ export class DesModeStrategy implements DescentStrategy {
     observer: VerticalProfileComputationParametersObserver,
     atmosphericConditions: AtmosphericConditions,
     flightPathAngle: Degrees,
+    acConfig: AircraftConfig,
   ): DescentStrategy {
     return new DesModeStrategy(
       observer,
       atmosphericConditions,
-      new FlightPathAngleStrategy(observer, atmosphericConditions, flightPathAngle),
+      new FlightPathAngleStrategy(observer, atmosphericConditions, flightPathAngle, acConfig),
+      acConfig,
     );
   }
 
@@ -132,7 +136,7 @@ export class DesModeStrategy implements DescentStrategy {
     mach: number,
     fuelOnBoard: number,
     headwindComponent: WindComponent,
-    config?: AircraftConfiguration,
+    config?: AircraftCtlSurfcConfiguration,
   ): StepResults {
     return this.descentStrategy.predictToAltitude(
       initialAltitude,
@@ -152,7 +156,7 @@ export class DesModeStrategy implements DescentStrategy {
     mach: number,
     fuelOnBoard: number,
     headwindComponent: WindComponent,
-    config?: AircraftConfiguration,
+    config?: AircraftCtlSurfcConfiguration,
   ): StepResults {
     return this.descentStrategy.predictToDistance(
       initialAltitude,
@@ -172,7 +176,7 @@ export class DesModeStrategy implements DescentStrategy {
     mach: number,
     fuelOnBoard: number,
     headwindComponent: WindComponent,
-    config?: AircraftConfiguration,
+    config?: AircraftCtlSurfcConfiguration,
   ): StepResults {
     return this.decelerationStrategy.predictToSpeed(
       initialAltitude,
@@ -190,7 +194,8 @@ export class IdleDescentStrategy implements DescentStrategy {
   constructor(
     private observer: VerticalProfileComputationParametersObserver,
     private atmosphericConditions: AtmosphericConditions,
-    private defaultConfig: AircraftConfiguration = DEFAULT_AIRCRAFT_CONFIG,
+    private readonly acConfig: AircraftConfig,
+    private defaultConfig: AircraftCtlSurfcConfiguration = DEFAULT_AIRCRAFT_CTL_SURFC_CONFIG,
   ) {}
 
   predictToAltitude(
@@ -200,7 +205,7 @@ export class IdleDescentStrategy implements DescentStrategy {
     mach: number,
     fuelOnBoard: number,
     headwindComponent: WindComponent,
-    config: Partial<AircraftConfiguration> = this.defaultConfig,
+    config: Partial<AircraftCtlSurfcConfiguration> = this.defaultConfig,
   ): StepResults {
     const { zeroFuelWeight, perfFactor, tropoPause } = this.observer.get();
     const { flapConfig, gearExtended, speedbrakesExtended } = { ...this.defaultConfig, ...config };
@@ -210,6 +215,7 @@ export class IdleDescentStrategy implements DescentStrategy {
     const predictedN1 = EngineModel.getIdleN1(midwayAltitude, computedMach, tropoPause) + VnavConfig.IDLE_N1_MARGIN;
 
     return Predictions.altitudeStep(
+      this.acConfig,
       initialAltitude,
       finalAltitude - initialAltitude,
       speed,
@@ -234,7 +240,7 @@ export class IdleDescentStrategy implements DescentStrategy {
     mach: number,
     fuelOnBoard: number,
     headwindComponent: WindComponent,
-    config: Partial<AircraftConfiguration> = this.defaultConfig,
+    config: Partial<AircraftCtlSurfcConfiguration> = this.defaultConfig,
   ): StepResults {
     const { zeroFuelWeight, perfFactor, tropoPause } = this.observer.get();
     const { flapConfig, gearExtended, speedbrakesExtended } = { ...this.defaultConfig, ...config };
@@ -243,6 +249,7 @@ export class IdleDescentStrategy implements DescentStrategy {
     const predictedN1 = EngineModel.getIdleN1(initialAltitude, computedMach, tropoPause) + VnavConfig.IDLE_N1_MARGIN;
 
     return Predictions.distanceStep(
+      this.acConfig,
       initialAltitude,
       distance,
       speed,
@@ -267,7 +274,7 @@ export class IdleDescentStrategy implements DescentStrategy {
     mach: Mach,
     fuelOnBoard: number,
     headwindComponent: WindComponent,
-    config: Partial<AircraftConfiguration> = this.defaultConfig,
+    config: Partial<AircraftCtlSurfcConfiguration> = this.defaultConfig,
   ): StepResults {
     const { zeroFuelWeight, perfFactor, tropoPause } = this.observer.get();
     const { flapConfig, gearExtended, speedbrakesExtended } = { ...this.defaultConfig, ...config };
@@ -279,6 +286,7 @@ export class IdleDescentStrategy implements DescentStrategy {
     const finalMach = Math.min(this.atmosphericConditions.computeMachFromCas(initialAltitude, finalSpeed), mach);
 
     return Predictions.speedChangeStep(
+      this.acConfig,
       -1,
       initialAltitude,
       initialSpeed,
