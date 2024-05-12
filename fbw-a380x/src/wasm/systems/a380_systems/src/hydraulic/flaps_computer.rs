@@ -7,7 +7,7 @@ use systems::simulation::{
 };
 
 use std::panic;
-use uom::si::{angle::degree, f64::*, velocity::knot};
+use uom::si::{angle::degree, f64::*, length::foot, velocity::knot};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 enum FlapsConf {
@@ -80,14 +80,30 @@ struct SlatFlapControlComputer {
     slats_demanded_angle: Angle,
     flaps_feedback_angle: Angle,
     slats_feedback_angle: Angle,
+    flaps_handle_position: u8,
     flaps_conf: FlapsConf,
     flap_load_relief_active: bool,
+    cruise_baulk_active: bool,
+    alpha_speed_lock_active: bool,
 }
 
 impl SlatFlapControlComputer {
     const EQUAL_ANGLE_DELTA_DEGREE: f64 = 0.177;
     const HANDLE_ONE_CONF_AIRSPEED_THRESHOLD_KNOTS: f64 = 205.;
     const CONF1F_TO_CONF1_AIRSPEED_THRESHOLD_KNOTS: f64 = 212.;
+    const CRUISE_BAULK_AIRSPEED_THRESHOLD_KNOTS: f64 = 265.5;
+    const CRUISE_BAULK_ALTITUDE_THRESHOLD_FEET: f64 = 22000.;
+    const ALPHA_SPEED_LOCK_IN_AIRSPEED_THRESHOLD_KNOTS: f64 = 155.;
+    const ALPHA_SPEED_LOCK_OUT_AIRSPEED_THRESHOLD_KNOTS: f64 = 161.;
+    const ALPHA_SPEED_LOCK_IN_AOA_THRESHOLD_DEGREES: f64 = 9.5;
+    const ALPHA_SPEED_LOCK_OUT_AOA_THRESHOLD_DEGREES: f64 = 9.2;
+
+    const FLRS_CONFFULL_TO_CONF3_AIRSPEED_THRESHOLD_KNOTS: f64 = 184.5;
+    const FLRS_CONF3_TO_CONF2S_AIRSPEED_THRESHOLD_KNOTS: f64 = 198.5;
+    const FLRS_CONF2_TO_CONF1F_AIRSPEED_THRESHOLD_KNOTS: f64 = 222.5;
+    const FLRS_CONF1F_TO_CONF2_AIRSPEED_THRESHOLD_KNOTS: f64 = 217.5;
+    const FLRS_CONF2S_TO_CONF3_AIRSPEED_THRESHOLD_KNOTS: f64 = 193.5;
+    const FLRS_CONF3_TO_CONFFULL_AIRSPEED_THRESHOLD_KNOTS: f64 = 179.5;
 
     fn new(context: &mut InitContext) -> Self {
         Self {
@@ -107,8 +123,11 @@ impl SlatFlapControlComputer {
             slats_demanded_angle: Angle::new::<degree>(0.),
             flaps_feedback_angle: Angle::new::<degree>(0.),
             slats_feedback_angle: Angle::new::<degree>(0.),
+            flaps_handle_position: 0,
             flaps_conf: FlapsConf::Conf0,
             flap_load_relief_active: false,
+            cruise_baulk_active: false,
+            alpha_speed_lock_active: false,
         }
     }
 
@@ -153,6 +172,14 @@ impl SlatFlapControlComputer {
             {
                 FlapsConf::Conf1F
             }
+            (0 | 1, 1)
+                if context.indicated_airspeed().get::<knot>()
+                    > Self::CRUISE_BAULK_AIRSPEED_THRESHOLD_KNOTS
+                    || context.indicated_altitude().get::<foot>()
+                        > Self::CRUISE_BAULK_ALTITUDE_THRESHOLD_FEET =>
+            {
+                FlapsConf::Conf0
+            }
             (0, 1) => FlapsConf::Conf1,
             (1, 1)
                 if context.indicated_airspeed().get::<knot>()
@@ -168,26 +195,67 @@ impl SlatFlapControlComputer {
                 FlapsConf::Conf1F
             }
             (_, 1) => FlapsConf::Conf1,
+            (_, 0) if context.is_in_flight() && self.alpha_speed_lock_active => {
+                if context.indicated_airspeed().get::<knot>()
+                    > Self::ALPHA_SPEED_LOCK_OUT_AIRSPEED_THRESHOLD_KNOTS
+                    || context.angle_of_attack().get::<degree>()
+                        < Self::ALPHA_SPEED_LOCK_OUT_AOA_THRESHOLD_DEGREES
+                {
+                    FlapsConf::Conf0
+                } else {
+                    self.flaps_conf
+                }
+            }
+            (1..=4, 0)
+                if context.is_in_flight()
+                    && (context.indicated_airspeed().get::<knot>()
+                        < Self::ALPHA_SPEED_LOCK_IN_AIRSPEED_THRESHOLD_KNOTS
+                        || context.angle_of_attack().get::<degree>()
+                            > Self::ALPHA_SPEED_LOCK_IN_AOA_THRESHOLD_DEGREES) =>
+            {
+                FlapsConf::Conf1F
+            }
             (_, 0) => FlapsConf::Conf0,
-            (1 | 2, 2) if context.indicated_airspeed().get::<knot>() > 222.5 => FlapsConf::Conf1F,
+            (1 | 2, 2)
+                if context.indicated_airspeed().get::<knot>()
+                    > Self::FLRS_CONF2_TO_CONF1F_AIRSPEED_THRESHOLD_KNOTS =>
+            {
+                FlapsConf::Conf1F
+            }
             (2, 2) if self.flaps_conf == FlapsConf::Conf1F => {
-                if context.indicated_airspeed().get::<knot>() < 217.5 {
+                if context.indicated_airspeed().get::<knot>()
+                    < Self::FLRS_CONF1F_TO_CONF2_AIRSPEED_THRESHOLD_KNOTS
+                {
                     FlapsConf::Conf2
                 } else {
                     FlapsConf::Conf1F
                 }
             }
-            (2 | 3, 3) if context.indicated_airspeed().get::<knot>() > 198.5 => FlapsConf::Conf2S,
+            (2 | 3, 3)
+                if context.indicated_airspeed().get::<knot>()
+                    > Self::FLRS_CONF3_TO_CONF2S_AIRSPEED_THRESHOLD_KNOTS =>
+            {
+                FlapsConf::Conf2S
+            }
             (3, 3) if self.flaps_conf == FlapsConf::Conf2S => {
-                if context.indicated_airspeed().get::<knot>() < 193.5 {
+                if context.indicated_airspeed().get::<knot>()
+                    < Self::FLRS_CONF2S_TO_CONF3_AIRSPEED_THRESHOLD_KNOTS
+                {
                     FlapsConf::Conf3
                 } else {
                     FlapsConf::Conf2S
                 }
             }
-            (3 | 4, 4) if context.indicated_airspeed().get::<knot>() > 184.5 => FlapsConf::Conf3,
+            (3 | 4, 4)
+                if context.indicated_airspeed().get::<knot>()
+                    > Self::FLRS_CONFFULL_TO_CONF3_AIRSPEED_THRESHOLD_KNOTS =>
+            {
+                FlapsConf::Conf3
+            }
             (4, 4) if self.flaps_conf == FlapsConf::Conf3 => {
-                if context.indicated_airspeed().get::<knot>() < 179.5 {
+                if context.indicated_airspeed().get::<knot>()
+                    < Self::FLRS_CONF3_TO_CONFFULL_AIRSPEED_THRESHOLD_KNOTS
+                {
                     FlapsConf::ConfFull
                 } else {
                     FlapsConf::Conf3
@@ -205,6 +273,15 @@ impl SlatFlapControlComputer {
             || flaps_handle.position() == 4 && self.flaps_conf != FlapsConf::ConfFull
     }
 
+    fn cruise_baulk_active(&self, flaps_handle: &FlapsHandle) -> bool {
+        flaps_handle.position() == 1 && self.flaps_conf == FlapsConf::Conf0
+    }
+
+    fn alpha_speed_lock_active(&self, flaps_handle: &FlapsHandle) -> bool {
+        flaps_handle.position() == 0
+            && (self.flaps_conf == FlapsConf::Conf1 || self.flaps_conf == FlapsConf::Conf1F)
+    }
+
     fn surface_movement_required(demanded_angle: Angle, feedback_angle: Angle) -> bool {
         (demanded_angle - feedback_angle).get::<degree>().abs() > Self::EQUAL_ANGLE_DELTA_DEGREE
     }
@@ -216,8 +293,11 @@ impl SlatFlapControlComputer {
         flaps_feedback: &impl FeedbackPositionPickoffUnit,
         slats_feedback: &impl FeedbackPositionPickoffUnit,
     ) {
+        self.flaps_handle_position = flaps_handle.position();
         self.flaps_conf = self.generate_configuration(flaps_handle, context);
         self.flap_load_relief_active = self.flap_load_relief_active(flaps_handle);
+        self.cruise_baulk_active = self.cruise_baulk_active(flaps_handle);
+        self.alpha_speed_lock_active = self.alpha_speed_lock_active(flaps_handle);
 
         self.flaps_demanded_angle = Self::demanded_flaps_fppu_angle_from_conf(self.flaps_conf);
         self.slats_demanded_angle = Self::demanded_slats_fppu_angle_from_conf(self.flaps_conf);
@@ -234,21 +314,15 @@ impl SlatFlapControlComputer {
         word.set_bit(14, false);
         word.set_bit(15, false);
         word.set_bit(16, false);
-        word.set_bit(17, self.flaps_conf == FlapsConf::Conf0);
-        word.set_bit(
-            18,
-            self.flaps_conf == FlapsConf::Conf1 || self.flaps_conf == FlapsConf::Conf1F,
-        );
-        word.set_bit(
-            19,
-            self.flaps_conf == FlapsConf::Conf2 || self.flaps_conf == FlapsConf::Conf2S,
-        );
-        word.set_bit(20, self.flaps_conf == FlapsConf::Conf3);
-        word.set_bit(21, self.flaps_conf == FlapsConf::ConfFull);
+        word.set_bit(17, self.flaps_handle_position == 0);
+        word.set_bit(18, self.flaps_handle_position == 1);
+        word.set_bit(19, self.flaps_handle_position == 2);
+        word.set_bit(20, self.flaps_handle_position == 3);
+        word.set_bit(21, self.flaps_handle_position == 4);
         word.set_bit(22, self.flap_load_relief_active);
         word.set_bit(23, false);
-        word.set_bit(24, false);
-        word.set_bit(25, false);
+        word.set_bit(24, self.alpha_speed_lock_active);
+        word.set_bit(25, self.cruise_baulk_active);
         word.set_bit(26, self.flaps_conf == FlapsConf::Conf1);
         word.set_bit(27, false);
         word.set_bit(28, true);
@@ -294,22 +368,22 @@ impl SlatFlapControlComputer {
             self.flaps_feedback_angle > Angle::new::<degree>(-5.0)
                 && self.flaps_feedback_angle < Angle::new::<degree>(2.5),
         );
-        // Flaps >= 16°
+        // Flaps >= 7°
         word.set_bit(
             20,
-            self.flaps_feedback_angle > Angle::new::<degree>(150.)
+            self.flaps_feedback_angle > Angle::new::<degree>(102.1)
+                && self.flaps_feedback_angle < Angle::new::<degree>(254.),
+        );
+        // Flaps >= 16°
+        word.set_bit(
+            21,
+            self.flaps_feedback_angle > Angle::new::<degree>(150.0)
                 && self.flaps_feedback_angle < Angle::new::<degree>(254.),
         );
         // Flaps >= 25°
         word.set_bit(
-            21,
-            self.flaps_feedback_angle > Angle::new::<degree>(189.8)
-                && self.flaps_feedback_angle < Angle::new::<degree>(254.),
-        );
-        // Flaps >= 31°
-        word.set_bit(
             22,
-            self.flaps_feedback_angle > Angle::new::<degree>(212.)
+            self.flaps_feedback_angle > Angle::new::<degree>(189.8)
                 && self.flaps_feedback_angle < Angle::new::<degree>(254.),
         );
         // Flaps extended 32°
@@ -446,7 +520,7 @@ mod tests {
         Aircraft,
     };
 
-    use uom::si::{angular_velocity::degree_per_second, pressure::psi};
+    use uom::si::{angle::radian, angular_velocity::degree_per_second, pressure::psi};
 
     struct SlatFlapGear {
         current_angle: Angle,
@@ -667,6 +741,16 @@ mod tests {
             self
         }
 
+        fn set_angle_of_attack(mut self, angle_of_attack: f64) -> Self {
+            self.write_by_name("ANGLE OF ATTACK INDICATOR", angle_of_attack);
+            self
+        }
+
+        fn set_on_ground(mut self, on_ground: bool) -> Self {
+            self.write_by_name("SIM ON GROUND", on_ground);
+            self
+        }
+
         fn set_green_hyd_pressure(mut self) -> Self {
             self.write_by_name("HYD_GREEN_PRESSURE", 2500.);
             self
@@ -769,7 +853,7 @@ mod tests {
             .set_green_hyd_pressure()
             .set_yellow_hyd_pressure()
             .set_blue_hyd_pressure()
-            .set_indicated_airspeed(0.)
+            .set_indicated_airspeed(160.)
             .set_flaps_handle_position(0)
             .run_one_tick();
 
@@ -847,7 +931,7 @@ mod tests {
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(14));
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(15));
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(19));
-        assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(20));
+        assert!(test_bed.read_slat_flap_actual_position_word().get_bit(20));
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(21));
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(22));
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(23));
@@ -878,7 +962,7 @@ mod tests {
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(15));
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(19));
         assert!(test_bed.read_slat_flap_actual_position_word().get_bit(20));
-        assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(21));
+        assert!(test_bed.read_slat_flap_actual_position_word().get_bit(21));
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(22));
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(23));
     }
@@ -909,7 +993,7 @@ mod tests {
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(19));
         assert!(test_bed.read_slat_flap_actual_position_word().get_bit(20));
         assert!(test_bed.read_slat_flap_actual_position_word().get_bit(21));
-        assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(22));
+        assert!(test_bed.read_slat_flap_actual_position_word().get_bit(22));
         assert!(!test_bed.read_slat_flap_actual_position_word().get_bit(23));
     }
 
@@ -951,7 +1035,7 @@ mod tests {
         let angle_delta: f64 = 0.1;
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
-            .set_indicated_airspeed(50.)
+            .set_indicated_airspeed(160.)
             .run_one_tick();
 
         test_bed.test_flap_conf(0, 0., 0., FlapsConf::Conf0, angle_delta);
@@ -1057,7 +1141,7 @@ mod tests {
         let angle_delta: f64 = 0.1;
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
-            .set_indicated_airspeed(150.)
+            .set_indicated_airspeed(160.)
             .run_one_tick();
 
         test_bed = test_bed.set_flaps_handle_position(4).run_one_tick();
@@ -1130,19 +1214,19 @@ mod tests {
         assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf2);
 
         test_bed = test_bed.set_flaps_handle_position(0).run_one_tick();
-        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf0);
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F); // alpha lock
 
         test_bed = test_bed.set_flaps_handle_position(3).run_one_tick();
         assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf3);
 
         test_bed = test_bed.set_flaps_handle_position(0).run_one_tick();
-        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf0);
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F); // alpha lock
 
         test_bed = test_bed.set_flaps_handle_position(4).run_one_tick();
         assert_eq!(test_bed.get_flaps_conf(), FlapsConf::ConfFull);
 
         test_bed = test_bed
-            .set_indicated_airspeed(110.)
+            .set_indicated_airspeed(160.)
             .set_flaps_handle_position(0)
             .run_one_tick();
 
@@ -1282,7 +1366,7 @@ mod tests {
         assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf2);
 
         test_bed = test_bed.set_flaps_handle_position(0).run_one_tick();
-        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf0);
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F); // alpha lock
 
         test_bed = test_bed.set_flaps_handle_position(2).run_one_tick();
         assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf2);
@@ -1327,7 +1411,7 @@ mod tests {
         assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf3);
 
         test_bed = test_bed.set_flaps_handle_position(0).run_one_tick();
-        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf0);
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F); // alpha lock
 
         test_bed = test_bed.set_flaps_handle_position(3).run_one_tick();
         assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf3);
@@ -1372,7 +1456,7 @@ mod tests {
         assert_eq!(test_bed.get_flaps_conf(), FlapsConf::ConfFull);
 
         test_bed = test_bed.set_flaps_handle_position(0).run_one_tick();
-        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf0);
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F); // alpha lock
 
         test_bed = test_bed.set_flaps_handle_position(4).run_one_tick();
         assert_eq!(test_bed.get_flaps_conf(), FlapsConf::ConfFull);
@@ -1390,6 +1474,7 @@ mod tests {
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
             .set_indicated_airspeed(0.)
+            .set_on_ground(true)
             .set_flaps_handle_position(0)
             .run_one_tick();
 
@@ -1411,6 +1496,7 @@ mod tests {
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
             .set_indicated_airspeed(0.)
+            .set_on_ground(true)
             .set_flaps_handle_position(1)
             .run_one_tick();
 
@@ -1432,6 +1518,7 @@ mod tests {
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
             .set_indicated_airspeed(0.)
+            .set_on_ground(true)
             .set_flaps_handle_position(2)
             .run_one_tick();
 
@@ -1453,6 +1540,7 @@ mod tests {
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
             .set_indicated_airspeed(0.)
+            .set_on_ground(true)
             .set_flaps_handle_position(3)
             .run_waiting_for(Duration::from_secs(20));
 
@@ -1474,6 +1562,7 @@ mod tests {
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
             .set_indicated_airspeed(0.)
+            .set_on_ground(true)
             .set_flaps_handle_position(0)
             .run_one_tick();
 
@@ -1521,6 +1610,7 @@ mod tests {
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
             .set_indicated_airspeed(0.)
+            .set_on_ground(true)
             .set_flaps_handle_position(1)
             .run_one_tick();
 
@@ -1542,6 +1632,7 @@ mod tests {
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
             .set_indicated_airspeed(0.)
+            .set_on_ground(true)
             .set_flaps_handle_position(2)
             .run_one_tick();
 
@@ -1563,6 +1654,7 @@ mod tests {
         let mut test_bed = test_bed_with()
             .set_green_hyd_pressure()
             .set_indicated_airspeed(0.)
+            .set_on_ground(true)
             .set_flaps_handle_position(3)
             .run_one_tick();
 
@@ -1576,5 +1668,117 @@ mod tests {
             (test_bed.get_slats_fppu_feedback() - test_bed.get_slats_demanded_angle()).abs()
                 <= angle_delta
         );
+    }
+
+    #[test]
+    fn config_test_flrs_full() {
+        let mut test_bed = test_bed_with()
+            .set_green_hyd_pressure()
+            .set_indicated_airspeed(186.)
+            .set_flaps_handle_position(0)
+            .run_one_tick();
+
+        test_bed = test_bed
+            .set_flaps_handle_position(4)
+            .run_waiting_for(Duration::from_secs(50));
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf3);
+    }
+
+    #[test]
+    fn config_test_flrs_3() {
+        let mut test_bed = test_bed_with()
+            .set_green_hyd_pressure()
+            .set_indicated_airspeed(200.)
+            .set_flaps_handle_position(0)
+            .run_one_tick();
+
+        test_bed = test_bed
+            .set_flaps_handle_position(3)
+            .run_waiting_for(Duration::from_secs(50));
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf2S);
+    }
+
+    #[test]
+    fn config_test_flrs_2() {
+        let mut test_bed = test_bed_with()
+            .set_green_hyd_pressure()
+            .set_indicated_airspeed(224.)
+            .set_flaps_handle_position(0)
+            .run_one_tick();
+
+        test_bed = test_bed
+            .set_flaps_handle_position(2)
+            .run_waiting_for(Duration::from_secs(50));
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F);
+    }
+
+    #[test]
+    fn config_test_cruise_baulk() {
+        let mut test_bed = test_bed_with()
+            .set_green_hyd_pressure()
+            .set_indicated_airspeed(280.)
+            .set_on_ground(false)
+            .set_flaps_handle_position(0)
+            .run_one_tick();
+
+        test_bed = test_bed
+            .set_flaps_handle_position(1)
+            .run_waiting_for(Duration::from_secs(20));
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf0);
+        assert!(test_bed.read_slat_flap_system_status_word().get_bit(25));
+    }
+
+    #[test]
+    fn config_test_alpha_lock_speed() {
+        let mut test_bed = test_bed_with()
+            .set_green_hyd_pressure()
+            .set_indicated_airspeed(130.)
+            .set_angle_of_attack(Angle::new::<degree>(5.).get::<radian>())
+            .set_on_ground(false)
+            .set_flaps_handle_position(1)
+            .run_one_tick();
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F);
+        assert!(!test_bed.read_slat_flap_system_status_word().get_bit(24));
+
+        test_bed = test_bed.set_flaps_handle_position(0).run_one_tick();
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F);
+        assert!(test_bed.read_slat_flap_system_status_word().get_bit(24));
+
+        test_bed = test_bed.set_indicated_airspeed(200.).run_one_tick();
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf0);
+        assert!(!test_bed.read_slat_flap_system_status_word().get_bit(24));
+    }
+
+    #[test]
+    fn config_test_alpha_lock_aoa() {
+        let mut test_bed = test_bed_with()
+            .set_green_hyd_pressure()
+            .set_indicated_airspeed(200.)
+            .set_angle_of_attack(Angle::new::<degree>(10.).get::<radian>())
+            .set_on_ground(false)
+            .set_flaps_handle_position(1)
+            .run_one_tick();
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F);
+        assert!(!test_bed.read_slat_flap_system_status_word().get_bit(24));
+
+        test_bed = test_bed.set_flaps_handle_position(0).run_one_tick();
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf1F);
+        assert!(test_bed.read_slat_flap_system_status_word().get_bit(24));
+
+        test_bed = test_bed
+            .set_angle_of_attack(Angle::new::<degree>(9.1).get::<radian>())
+            .run_one_tick();
+
+        assert_eq!(test_bed.get_flaps_conf(), FlapsConf::Conf0);
+        assert!(!test_bed.read_slat_flap_system_status_word().get_bit(24));
     }
 }
