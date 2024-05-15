@@ -1,5 +1,6 @@
 import {
   ComponentProps,
+  Consumer,
   DisplayComponent,
   FSComponent,
   Subject,
@@ -11,6 +12,7 @@ import {
 import './style.scss';
 import { DataEntryFormat } from 'instruments/src/MFD/pages/common/DataEntryFormats';
 import { FmsError, FmsErrorType } from '@fmgc/FmsError';
+import { InteractionMode } from 'instruments/src/MFD/MFD';
 
 // eslint-disable-next-line max-len
 export const emptyMandatoryCharacter = (selected: boolean) =>
@@ -18,18 +20,21 @@ export const emptyMandatoryCharacter = (selected: boolean) =>
 
 interface InputFieldProps<T> extends ComponentProps {
   dataEntryFormat: DataEntryFormat<T>;
-  mandatory?: Subscribable<boolean>; // Renders empty values with orange rectangles
-  inactive?: Subscribable<boolean>; // If inactive, will be rendered as static value (green text)
-  disabled?: Subscribable<boolean>; // Whether value can be set (if disabled, rendered as input field but greyed out)
+  /** Renders empty values with orange rectangles */
+  mandatory?: Subscribable<boolean>;
+  /** If inactive, will be rendered as static value (green text) */
+  inactive?: Subscribable<boolean>;
+  /** Whether value can be set (if disabled, rendered as input field but greyed out)  */
+  disabled?: Subscribable<boolean>;
   canBeCleared?: Subscribable<boolean>;
-  enteredByPilot?: Subscribable<boolean>; // Value will be displayed in smaller font, if not entered by pilot (i.e. computed)
+  /** Value will be displayed in smaller font, if not entered by pilot (i.e. computed) */
+  enteredByPilot?: Subscribable<boolean>;
   canOverflow?: boolean;
   value: Subject<T | null> | Subscribable<T | null>;
-  /**
-   * If defined, this component does not update the value prop, but rather calls this method.
-   */
+  /** If defined, this component does not update the value prop, but rather calls this method. */
   onModified?: (newValue: T | null) => void;
-  onInput?: (newValue: string) => void; // Called for every character that is being typed
+  /** Called for every character that is being typed */
+  onInput?: (newValue: string) => void;
   /**
    * Function which modifies data within flight plan. Called during validation phase, after data entry format has been checked
    * @param newValue to be validated
@@ -41,6 +46,10 @@ interface InputFieldProps<T> extends ComponentProps {
   containerStyle?: string;
   alignText?: 'flex-start' | 'center' | 'flex-end' | Subscribable<'flex-start' | 'center' | 'flex-end'>;
   tmpyActive?: Subscribable<boolean>;
+  /** Only handles KCCU input for respective side, receives key name only */
+  hEventConsumer: Consumer<string>;
+  /** Kccu uses the HW keys, and doesn't focus input fields */
+  interactionMode: Subscribable<InteractionMode>;
   // inViewEvent?: Consumer<boolean>; // Consider activating when we have a larger collision mesh for the screens
 }
 
@@ -176,16 +185,20 @@ export class InputField<T> extends DisplayComponent<InputFieldProps<T>> {
 
   private onKeyDown(ev: KeyboardEvent) {
     if (ev.keyCode === KeyCode.KEY_BACK_SPACE) {
-      if (this.modifiedFieldValue.get() === null && this.props.canBeCleared?.get() === true) {
-        this.modifiedFieldValue.set('');
-      } else if (this.modifiedFieldValue.get()?.length === 0) {
-        // Do nothing
-      } else {
-        this.modifiedFieldValue.set(this.modifiedFieldValue.get()?.slice(0, -1) ?? '');
-      }
-
-      this.onInput();
+      this.handleBackspace();
     }
+  }
+
+  private handleBackspace() {
+    if (this.modifiedFieldValue.get() === null && this.props.canBeCleared?.get() === true) {
+      this.modifiedFieldValue.set('');
+    } else if (this.modifiedFieldValue.get()?.length === 0) {
+      // Do nothing
+    } else {
+      this.modifiedFieldValue.set(this.modifiedFieldValue.get()?.slice(0, -1) ?? '');
+    }
+
+    this.onInput();
   }
 
   private onKeyPress(ev: KeyboardEvent) {
@@ -195,26 +208,34 @@ export class InputField<T> extends DisplayComponent<InputFieldProps<T>> {
     const key = String.fromCharCode(ev.keyCode).toUpperCase();
 
     if (ev.keyCode !== KeyCode.KEY_ENTER) {
-      if (this.modifiedFieldValue.get() === null) {
-        this.modifiedFieldValue.set('');
-        this.spanningDivRef.instance.style.justifyContent = 'flex-start';
-      }
-
-      if (
-        (this.modifiedFieldValue.get()?.length ?? 0) < this.props.dataEntryFormat.maxDigits ||
-        this.props.canOverflow === true
-      ) {
-        this.modifiedFieldValue.set(`${this.modifiedFieldValue.get()}${key}`);
-        this.caretRef.instance.style.display = 'inline';
-      }
-
-      this.onInput();
+      this.handleKeyInput(key);
     } else {
-      if (this.props.handleFocusBlurExternally === true) {
-        this.onBlur(true);
-      } else {
-        this.textInputRef.instance.blur();
-      }
+      this.handleEnter();
+    }
+  }
+
+  private handleKeyInput(key: string) {
+    if (this.modifiedFieldValue.get() === null) {
+      this.modifiedFieldValue.set('');
+      this.spanningDivRef.instance.style.justifyContent = 'flex-start';
+    }
+
+    if (
+      (this.modifiedFieldValue.get()?.length ?? 0) < this.props.dataEntryFormat.maxDigits ||
+      this.props.canOverflow === true
+    ) {
+      this.modifiedFieldValue.set(`${this.modifiedFieldValue.get()}${key}`);
+      this.caretRef.instance.style.display = 'inline';
+    }
+
+    this.onInput();
+  }
+
+  private handleEnter() {
+    if (this.props.handleFocusBlurExternally === true) {
+      this.onBlur(true);
+    } else {
+      this.textInputRef.instance.blur();
     }
   }
 
@@ -225,10 +246,12 @@ export class InputField<T> extends DisplayComponent<InputFieldProps<T>> {
       this.props.disabled?.get() === false &&
       this.props.inactive?.get() === false
     ) {
-      Coherent.trigger('FOCUS_INPUT_FIELD', this.guid, '', '', this.props.value.get(), false);
+      if (this.props.interactionMode.get() === InteractionMode.Touchscreen) {
+        Coherent.trigger('FOCUS_INPUT_FIELD', this.guid, '', '', this.props.value.get(), false);
+      }
       this.isFocused.set(true);
 
-      // After 30s, unfocus field, as long as unexplainable
+      // After 30s, unfocus field, if some other weird focus error happens
       setTimeout(() => {
         if (this.isFocused.get() === true) {
           Coherent.trigger('UNFOCUS_INPUT_FIELD', this.guid);
@@ -247,7 +270,9 @@ export class InputField<T> extends DisplayComponent<InputFieldProps<T>> {
 
   public async onBlur(validateAndUpdate: boolean = true) {
     if (this.props.disabled?.get() === false && this.props.inactive?.get() === false && this.isFocused.get() === true) {
-      Coherent.trigger('UNFOCUS_INPUT_FIELD', this.guid);
+      if (this.props.interactionMode.get() === InteractionMode.Touchscreen) {
+        Coherent.trigger('UNFOCUS_INPUT_FIELD', this.guid);
+      }
       this.isFocused.set(false);
       this.textInputRef.instance.classList.remove('valueSelected');
       this.caretRef.instance.style.display = 'none';
@@ -486,6 +511,60 @@ export class InputField<T> extends DisplayComponent<InputFieldProps<T>> {
         this.textInputRef.instance.focus();
       });
     }
+
+    this.props.hEventConsumer.handle((key) => {
+      if (!this.isFocused.get()) {
+        return;
+      }
+
+      // Un-select the text
+      this.textInputRef.instance.classList.remove('valueSelected');
+
+      if (key.match(/^[a-zA-Z0-9]{1}$/)) {
+        this.handleKeyInput(key);
+      }
+
+      if (key === 'ENT') {
+        this.handleEnter();
+      }
+
+      if (key === 'SP') {
+        this.handleKeyInput(' ');
+      }
+
+      if (key === 'SLASH') {
+        this.handleKeyInput('/');
+      }
+
+      if (key === 'DOT') {
+        this.handleKeyInput('.');
+      }
+
+      if (key === 'PLUSMINUS') {
+        const val = this.modifiedFieldValue.get();
+        if (val && val.substring(0, 1) === '+') {
+          this.modifiedFieldValue.set(`-${val.substring(1)}`);
+        } else if (val && val.substring(0, 1) === '-') {
+          this.modifiedFieldValue.set(`+${val.substring(1)}`);
+        } else {
+          this.modifiedFieldValue.set(`-${this.modifiedFieldValue.get()}`);
+        }
+      }
+
+      if (key === 'BACKSPACE') {
+        this.handleBackspace();
+      }
+
+      if (key === 'ESC' || key === 'ESC2') {
+        const [formatted] = this.props.dataEntryFormat.format(this.props.value.get());
+        this.modifiedFieldValue.set(formatted);
+        this.handleEnter();
+      }
+
+      if (key === 'UP' || key === 'RIGHT' || key === 'DOWN' || key === 'LEFT') {
+        // Unsupported atm
+      }
+    });
 
     /* if (this.props.inViewEvent) {
             this.subs.push(this.props.inViewEvent.whenChanged().handle((inView) =>
