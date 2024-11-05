@@ -52,7 +52,7 @@
         "Title": "固定的航圖"
       },
       "TT": {
-        "RearrangeWidgets": "重新排列模塊"
+        "RearrangeWidgets": "重新排列元件"
       },
       "Title": "重要訊息",
       "Weather": {
@@ -196,15 +196,15 @@
       "AirStarterUnit": "Air Starter Unit",
       "BaggageTruck": "行李車",
       "CateringTruck": "餐食車",
-      "Cones": "Safety Cones",
+      "Cones": "三角錐",
       "DoorAft": "後門",
-      "DoorCargo": "Cargo Door",
+      "DoorCargo": "貨艙門",
       "DoorFwd": "前門",
       "ExternalPower": "外部電源",
       "FuelTruck": "加油車",
       "JetBridge": "廊橋",
       "Title": "服務",
-      "WheelChocks": "Wheel Chocks"
+      "WheelChocks": "輪擋"
     },
     "Title": "地面"
   },
@@ -469,31 +469,31 @@
     "UseControllerInput": "Use Controller Input"
   },
   "QuickControls": {
-    "AlignAdirs": "Align ADIRS",
-    "FinishBoarding": "Finish Boarding",
-    "OnScreenKeyboard": "OnScreen Keyboard",
+    "AlignAdirs": "對齊 ADIRS",
+    "FinishBoarding": "完成登機",
+    "OnScreenKeyboard": "螢幕鍵盤",
     "PauseAtTod": "Pause at Top of Descent",
     "PauseAtTodArmed": "Armed",
     "PauseAtTodInactive": "Inactive",
-    "PauseAtTodStandby": "Standby",
+    "PauseAtTodStandby": "待命",
     "SimBridge": "SimBridge",
-    "SimBridgeConnected": "Connected",
-    "SimBridgeConnecting": "Connecting...",
+    "SimBridgeConnected": "已連線",
+    "SimBridgeConnecting": "連線中...",
     "SimBridgeOff": "Off",
     "SimBridgeOffline": "Not Available",
     "Simrate": "Simrate",
     "TT": {
-      "AlignAdirs": "Instantly align ADIRS",
+      "AlignAdirs": "立即對齊 ADIRS",
       "AutoBrightness": "Turn Auto Brightness On/Off",
       "Brightness": "Set flyPad brightness",
       "FinishBoarding": "Instantly finish boarding",
       "OnScreenKeyboard": "Turn OnScreen Keyboard On/Off",
       "PauseAtTod": "Arm or Disarm Pause at Top of Descent",
-      "PowerButton": "Power Off",
-      "Settings": "Go to flyPad Settings page",
+      "PowerButton": "電源關閉",
+      "Settings": "前往 flyPad 設定頁面",
       "SimBridge": "Control SimBridge Connection",
       "Simrate": "Increase or Decrease Simulation Rate",
-      "Sleep": "Standby"
+      "Sleep": "待命"
     },
     "Title": "Quick Controls"
   },
@@ -665,7 +665,7 @@
       "Blue": "Blue",
       "Brightness": "Brightness",
       "Dark": "Dark",
-      "Language": "Language",
+      "Language": "語言",
       "Light": "Light",
       "Local": "Local",
       "LocalTimeFormat": "Local Time Format",
